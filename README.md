@@ -401,7 +401,184 @@ Como parte del diseño, se incorporó un sistema de sujeción mediante velcro, q
 
 El diseño ambidiestro permite utilizar la muñequera tanto en la mano izquierda como en la derecha, proporcionando mayor flexibilidad durante las pruebas y facilitando su adaptación a diferentes usuarios. En conjunto, la muñequera integra el sistema de sujeción, los elementos de contacto para la adquisición de la señal y el circuito inalámbrico en una solución portátil y funcional.
 
+### Aplicación de alerta
 
+```cpp
+#include <WiFi.h>
+#include <WebServer.h>
+#include <WiFiServer.h>
+#include <WiFiClient.h>
+
+const char* ssid="GSR_ESP32";
+const char* password="12345678";
+
+const int pinGSR=34;
+const float VCC=3.3;
+const float RFIJA=68000.0;
+```
+
+Esta primera parte incorpora las librerías necesarias para que el ESP32 pueda comunicarse mediante WiFi y TCP. También se establece el nombre y la contraseña de la red que crea el ESP32. Además, se define el pin 34 como entrada para recibir la señal del sensor GSR y se establecen los valores eléctricos necesarios para realizar los cálculos.
+
+```cpp
+float voltajeGSR=0.0;
+float conductancia_uS=0.0;
+float conductanciaBase=0.0;
+float cambioGSR=0.0;
+float porcentajeEstres=0.0;
+float resistenciaPiel=0.0;
+```
+
+Estas variables almacenan los valores obtenidos durante la medición. Primero se obtiene el voltaje del sensor, después se calcula la conductancia GSR y la resistencia de la piel. conductanciaBase guarda el valor de referencia obtenido durante la calibración, mientras que cambioGSR y porcentajeEstres permiten determinar cuánto ha variado la señal respecto a ese valor basal.
+
+```cpp
+if(!calibrado){
+    sumaCalibracion+=conductancia_uS;
+    muestrasCalibracion++;
+
+    if(millis()-inicioCalibracion>=10000){
+        conductanciaBase=
+        sumaCalibracion/muestrasCalibracion;
+
+        calibrado=true;
+    }
+}
+```
+
+Esta es una de las partes más importantes. Al iniciar el sistema, el ESP32 permanece 10 segundos calibrándose. Durante este tiempo toma diferentes muestras de GSR y las va acumulando. Cuando terminan los 15 segundos, calcula el promedio de todas las muestras y lo guarda como conductanciaBase, que será el valor GSR basal de referencia.
+
+```cpp
+int valorADC=analogRead(pinGSR);
+voltajeGSR=(valorADC/4095.0)*VCC;
+conductancia_uS=
+(voltajeGSR/(RFIJA*(VCC-voltajeGSR)))*1000000.0;
+cambioGSR=conductancia_uS-conductanciaBase;
+porcentajeEstres=
+(cambioGSR/conductanciaBase)*100.0;
+```
+
+Aquí el ESP32 realiza la lectura de la señal proveniente del sensor mediante analogRead(). Como el ADC está configurado a 12 bits, el valor obtenido puede estar entre 0 y 4095. Después, este valor se transforma en un voltaje entre 0 y 3,3 V. Este cálculo transforma el voltaje obtenido del sensor en conductancia de la piel, expresada en microsiemens (µS). Es importante porque el sistema no trabaja directamente con el valor del ADC, sino con la conductancia que se obtiene a partir de esa lectura. También se calcula la resistencia de la piel utilizando la relación entre resistencia y conductancia. Una vez terminada la calibración, el programa compara el GSR actual con el GSR basal. cambioGSR indica cuánto ha aumentado o disminuido la conductancia, mientras que porcentajeEstres expresa ese cambio en forma de porcentaje respecto al valor basal.
+
+```cpp
+if(porcentajeEstres<UMBRAL_MODERADO){
+    nivelEstres="POCO ESTRES";
+}
+else if(porcentajeEstres<UMBRAL_ELEVADO){
+    nivelEstres="ESTRES MODERADO";
+}
+else{
+    nivelEstres="ESTRES ELEVADO";
+}
+void iniciarToma(){
+    if(calibrado){
+        tomandoDatos=true;
+        estadoToma="TOMANDO DATOS";
+        inicioToma=millis();
+    }
+}
+void detenerToma(){
+    tomandoDatos=false;
+    estadoToma="ESPERANDO";
+}
+```
+
+En esta parte se utiliza el porcentaje calculado para clasificar la señal en tres niveles. El código establece un umbral del 5 % para estrés moderado y del 20 % para estrés elevado. Por debajo del 5 % se muestra “POCO ESTRES”, entre 5 % y 20 % “ESTRES MODERADO” y desde 20 % “ESTRES ELEVADO”.Esta función permite comenzar la adquisición solamente cuando la calibración ya ha terminado. Al iniciar, tomandoDatos pasa a true y el sistema cambia su estado a “TOMANDO DATOS”. Para detenerla el usuario puede controlar cuándo comienza y termina la toma de datos.
+
+```cpp
+if(tomandoDatos&&clienteMATLAB&&
+clienteMATLAB.connected()){
+
+    String mensaje=
+    String(tiempoToma,2)+","+
+    String(voltajeGSR,3)+","+
+    String(conductancia_uS,2)+","+
+    String(resistenciaPiel,2)+","+
+    String(conductanciaBase,2)+","+
+    String(cambioGSR,2)+","+
+    String(porcentajeEstres,1)+","+
+    nivelEstres+"\n";
+
+    clienteMATLAB.print(mensaje);
+}
+```
+
+Cuando se está realizando una toma y MATLAB está conectado, el ESP32 envía los datos mediante TCP. En cada mensaje se incluyen el tiempo, voltaje, conductancia, resistencia, valor basal, cambio, porcentaje y nivel de estrés. Esto permite que MATLAB reciba y registre los datos obtenidos por la muñequera.
+
+# Parte C
+
+<div align="center">
+<img width="500" height="327.48" alt="image" src="https://github.com/user-attachments/assets/4d6b6615-9c47-4ee8-86b4-a3b125deaac3" />
+</div>
+
+<div align="center">
+Fig.2 Respuesta GSR
+</div>
+
+muestra la evolución de la conductancia de la respuesta galvánica de la piel (GSR) en función del tiempo, después de aplicar un filtro Butterworth para reducir las variaciones rápidas y facilitar la interpretación de la señal. Durante el registro, la conductancia presenta valores aproximados entre 9,5 y 11,8 µS, con diferentes incrementos y disminuciones que coinciden con las actividades realizadas por la persona. La señal no permanece constante, sino que presenta respuestas diferenciadas ante los cambios en la actividad fisiológica.
+
+Durante los primeros segundos se observa un incremento progresivo de la conductancia, pasando de aproximadamente 9,6 µS hasta valores cercanos a 10,5 µS. Posteriormente, alrededor de los 4–5 segundos, aparece un primer máximo próximo a 10,9 µS. Después de este incremento, la señal disminuye gradualmente, alcanzando uno de sus valores mínimos alrededor de los 10–11 segundos, con aproximadamente 9,5 µS. Esta variación muestra que la conductancia puede presentar cambios incluso antes de las actividades principales del experimento, por lo que resulta importante analizar los picos en relación con el momento exacto en que se realizaron las actividades.
+
+Uno de los cambios más representativos se encuentra aproximadamente entre los 12 y 15 segundos. En este intervalo la conductancia aumenta rápidamente desde valores cercanos a 9,5 µS hasta alcanzar un pico de aproximadamente 11,0 µS alrededor de los 13 segundos. De acuerdo con las condiciones del experimento, este incremento corresponde a la realización de una inspiración profunda. La respuesta observada puede interpretarse como una modificación de la actividad fisiológica asociada al cambio en el patrón respiratorio. Después de alcanzar este pico, la señal disminuye progresivamente, lo que muestra una recuperación respecto al incremento producido durante la inspiración.
+
+El cambio de mayor magnitud se observa aproximadamente entre los 19 y 21 segundos. En este momento la conductancia presenta un incremento mucho más pronunciado, pasando de aproximadamente 10,4–10,5 µS hasta un máximo cercano a 11,8 µS. Este es el pico más elevado de todo el registro y corresponde al momento en que la persona realiza un sprint. En comparación con la respuesta producida por la inspiración profunda, el sprint genera una variación más amplia y rápida de la conductancia. Esto demuestra que la señal GSR registrada por el sistema es capaz de detectar cambios asociados a una actividad física de mayor intensidad.
+
+Después del máximo producido por el sprint, la conductancia comienza a descender de forma gradual, pasando de aproximadamente 11,8 µS a valores cercanos a 10,5 µS y posteriormente alrededor de 10,2 µS. Esta disminución representa el periodo posterior a la actividad, durante el cual la señal se aleja progresivamente de su máximo. Hacia el final del registro se observan pequeñas fluctuaciones, incluyendo un nuevo incremento alrededor de los 28–29 segundos, aunque este no alcanza la magnitud del pico producido durante el sprint.
+
+En términos generales, los resultados muestran una relación temporal entre las actividades realizadas y las variaciones de la señal GSR. La inspiración profunda produce un aumento moderado, alcanzando aproximadamente 11,0 µS, mientras que el sprint produce la respuesta de mayor amplitud, llegando aproximadamente a 11,8 µS. Por tanto, dentro de las condiciones de esta prueba, el sprint generó una respuesta galvánica más pronunciada que la inspiración profunda.
+
+El uso del filtro Butterworth resulta importante para el análisis, ya que permite obtener una curva más suave y facilita la identificación de los máximos, mínimos y tendencias de la señal. Gracias a esto, se pueden distinguir con mayor claridad los cambios asociados a las diferentes actividades. Sin embargo, es importante señalar que la GSR por sí sola no permite afirmar de manera definitiva que una persona está experimentando estrés, ya que la conductancia de la piel puede variar por diferentes factores fisiológicos. En este experimento, lo que puede afirmarse directamente es que las actividades realizadas estuvieron acompañadas por cambios medibles en la conductancia de la piel, siendo el sprint el evento que produjo la mayor variación registrada.
+
+# Análisis
+
+## Evaluación de la eficacia del sistema para el monitoreo ambulatorio del estrés
+
+El sistema desarrollado presenta características que permiten considerarlo una solución portátil y de monitoreo ambulatorio de la respuesta galvánica de la piel (GSR). El uso de un ESP32 permite realizar la adquisición de la señal de manera inalámbrica, ya que el dispositivo crea su propia red WiFi y puede transmitir los datos hacia una interfaz web y hacia MATLAB mediante una conexión TCP. Esta característica resulta especialmente útil para realizar mediciones sin necesidad de mantener al usuario conectado directamente a un ordenador durante toda la prueba.
+
+En oficinas, el sistema podría utilizarse para observar cómo varía la conductancia de la piel durante diferentes actividades, por ejemplo, durante periodos de trabajo, concentración, reuniones o situaciones que impliquen cambios en la actividad de la persona. La principal ventaja en este entorno es su portabilidad, puesto que el circuito puede estar sujeto a la muñequera y transmitir los datos de forma inalámbrica. Sin embargo, el entorno laboral presenta diferentes factores que pueden modificar la señal GSR, como el movimiento, la temperatura, la actividad física o la interacción con otras personas. Por esta razón, un incremento de la GSR no debería interpretarse directamente como estrés sin considerar qué actividad estaba realizando la persona en ese momento.
+
+En aulas universitarias, el sistema también puede ser útil para registrar cambios fisiológicos durante actividades académicas. Por ejemplo, permitiría observar las variaciones de la señal durante una exposición, una evaluación o una actividad que requiera concentración. La interfaz desarrollada facilita esta tarea porque muestra en tiempo real el valor de GSR, el valor basal, el cambio de la señal, el porcentaje calculado y el nivel establecido por el programa. Además, el sistema realiza una calibración inicial de 15 segundos antes de comenzar la toma de datos, obteniendo un valor basal individual que posteriormente se utiliza como referencia.
+
+En el hogar, el sistema puede presentar incluso mayor facilidad de utilización debido a que el usuario puede realizar las mediciones en un ambiente controlado y con menor cantidad de interferencias externas. La alimentación mediante una fuente portátil y la comunicación inalámbrica permiten utilizar el sistema sin depender de una conexión física con un ordenador. Esto favorece su utilización para registrar diferentes situaciones y comparar cómo cambia la señal GSR ante determinadas actividades.
+
+Una de las principales ventajas del sistema es que realiza una nueva lectura aproximadamente cada 200 ms, equivalente a unas cinco mediciones por segundo. Esto permite seguir las variaciones de la señal durante la toma de datos. Posteriormente, el programa calcula la conductancia y compara el valor actual con el valor basal obtenido durante la calibración. El cambio relativo se expresa mediante un porcentaje y, de acuerdo con los umbrales establecidos en el código, se clasifica como “POCO ESTRES”, “ESTRES MODERADO” o “ESTRES ELEVADO”.
+
+Sin embargo, la principal limitación para considerar el sistema como un detector definitivo de estrés es que la clasificación depende únicamente del cambio de conductancia respecto al valor basal. En el código se establecen umbrales del 5 % y 20 %, pero estos valores forman parte del criterio implementado en el prototipo y no demuestran por sí mismos que esos porcentajes correspondan a determinados niveles de estrés en todas las personas. Además, la GSR puede modificarse debido a factores diferentes del estrés, como la actividad física, la respiración, el movimiento o las condiciones ambientales.
+
+Esto se puede observar en la prueba realizada: la inspiración profunda produjo un aumento de la conductancia hasta aproximadamente 11 µS, mientras que durante el sprint se alcanzó el máximo de aproximadamente 11,8 µS. El hecho de que una actividad física produzca una respuesta GSR importante demuestra que el sistema detecta correctamente cambios fisiológicos, pero también evidencia que un pico de GSR no necesariamente representa estrés psicológico, ya que puede estar relacionado con la actividad física realizada.
+
+Por lo tanto, el sistema desarrollado presenta una buena utilidad como prototipo de adquisición y monitorización de cambios en la respuesta galvánica de la piel, especialmente por su portabilidad, comunicación inalámbrica, calibración individual y posibilidad de visualización en tiempo real. No obstante, para utilizarlo como un sistema de detección de estrés en oficinas, aulas o viviendas sería necesario realizar pruebas con un número mayor de participantes, controlar las condiciones de las pruebas y comparar las mediciones GSR con otros indicadores y con situaciones experimentales previamente definidas.
+
+## Alcance y limitaciones para detectar estrés neonatal
+
+El sistema construido tiene un alcance principalmente experimental para registrar cambios en la conductancia de la piel, pero su utilización para detectar estrés en recién nacidos presenta limitaciones mucho mayores. Aunque el principio de medir cambios en la conductancia de la piel puede resultar útil para estudiar respuestas fisiológicas, el sistema desarrollado durante la práctica no está validado ni diseñado específicamente para su utilización neonatal.
+
+Una primera limitación corresponde al diseño físico del dispositivo. La muñequera fue desarrollada como una solución ambidiestra para realizar mediciones en una persona y mantener el circuito sujeto mediante velcro. En un recién nacido, las dimensiones de la muñeca, las características de la piel y la necesidad de evitar una presión excesiva hacen que el diseño deba ser completamente adaptado. Por tanto, no sería apropiado asumir que una muñequera diseñada para este prototipo puede utilizarse directamente en un recién nacido.
+
+Otra limitación importante es la interpretación de la señal. El código determina el nivel mediante un porcentaje de cambio respecto a una conductancia basal y utiliza los mismos umbrales para clasificar la respuesta. Sin embargo, el programa no contiene un modelo específico para las características fisiológicas de los recién nacidos. Por ello, no sería correcto aplicar directamente las categorías “POCO ESTRES”, “ESTRES MODERADO” y “ESTRES ELEVADO” desarrolladas para este prototipo a una población neonatal.
+
+También existe una dificultad relacionada con los movimientos y condiciones propias del recién nacido. Los cambios de conductancia podrían estar relacionados con múltiples estímulos y no únicamente con una respuesta de estrés. Por ejemplo, el movimiento, el contacto, los cambios de temperatura o diferentes estímulos del entorno pueden modificar la señal registrada. El sistema actual no dispone de sensores adicionales que permitan diferenciar estas situaciones, por lo que existe riesgo de interpretar una variación fisiológica como una respuesta específica de estrés.
+
+Además, el sistema fue desarrollado principalmente para realizar una toma de datos controlada, en la que primero se realiza una calibración de 15 segundos y posteriormente se inicia manualmente la adquisición. Para una aplicación neonatal sería necesario determinar un procedimiento de calibración y adquisición específicamente diseñado para esa población, además de establecer criterios de validación adecuados.
+
+Por otra parte, cualquier sistema destinado a la monitorización de recién nacidos requeriría especial atención a la seguridad, comodidad, higiene, materiales de contacto y fiabilidad del dispositivo. El prototipo desarrollado utiliza componentes electrónicos, cables y una muñequera con un circuito sujeto mediante velcro, por lo que antes de plantear cualquier utilización neonatal sería necesario rediseñar y evaluar físicamente el dispositivo para ese propósito. Asimismo, una aplicación de este tipo necesitaría validación especializada y no debería utilizarse para tomar decisiones clínicas basándose únicamente en la clasificación generada por este código.
+
+En consecuencia, el alcance del sistema para el ámbito neonatal puede considerarse principalmente experimental y de investigación, como punto de partida para estudiar la adquisición de señales GSR, pero no como un dispositivo preparado para detectar o diagnosticar estrés neonatal. Para avanzar hacia esa aplicación sería necesario desarrollar un sensor específicamente adaptado, establecer protocolos de adquisición adecuados, realizar pruebas controladas y validar los resultados con métodos de referencia apropiados.
+
+Conclusión l
+
+En conjunto, el sistema desarrollado demuestra ser funcional para la adquisición inalámbrica de la señal GSR y para visualizar sus variaciones en tiempo real. Su calibración individual, transmisión mediante WiFi, comunicación con MATLAB y clasificación automática permiten utilizarlo como un prototipo de monitoreo fisiológico en diferentes entornos cotidianos. Sin embargo, los resultados obtenidos deben interpretarse como cambios en la respuesta galvánica de la piel y no como una medición definitiva de estrés, especialmente cuando existen actividades físicas que también producen cambios importantes en la señal.
+
+Para el caso neonatal, las limitaciones son considerablemente mayores. El diseño físico, los parámetros de calibración, los umbrales de clasificación y la ausencia de validación específica hacen que el sistema actual no sea adecuado para determinar por sí solo el estrés de un recién nacido. Su principal valor en este contexto sería servir como base experimental para futuros desarrollos, que tendrían que incorporar un diseño adaptado, procedimientos específicos y una validación especializada antes de considerar cualquier aplicación real.
+
+Conclusiones
+- La respuesta GSR permitió identificar cambios fisiológicos asociados a diferentes niveles de actividad durante la prueba. La inspiración profunda produjo un incremento moderado de la conductancia, alcanzando aproximadamente 11 µS, mientras que el sprint generó la respuesta de mayor amplitud, cercana a 11,8 µS. Esto evidencia que la señal adquirida es sensible a modificaciones en el estado fisiológico de la persona y permite diferenciar respuestas de distinta magnitud.
+
+- La utilización de un valor basal individual resulta fundamental para interpretar las variaciones de la conductancia. La calibración inicial permite establecer una referencia propia de cada participante y, posteriormente, determinar cuánto se aleja la señal de ese estado inicial. Este procedimiento proporciona una interpretación más adecuada que utilizar directamente un valor absoluto de GSR para todas las personas.
+
+- El filtrado mediante Butterworth mejoró la interpretación de la señal al reducir las fluctuaciones que dificultaban la identificación de las tendencias principales. Gracias al suavizado de la señal fue posible localizar con mayor claridad los incrementos y descensos de conductancia relacionados temporalmente con las actividades realizadas, facilitando el análisis de los resultados obtenidos.
+
+- Los resultados muestran que una variación elevada de GSR no puede atribuirse exclusivamente al estrés psicológico. La respuesta más alta del registro se produjo durante una actividad física intensa, lo que demuestra que factores como el esfuerzo corporal también pueden generar incrementos importantes de conductancia. Por ello, la GSR debe interpretarse considerando el contexto de la medición y no como un indicador aislado de estrés.
+
+- El desarrollo realizado constituye una base para sistemas portátiles de monitorización fisiológica, pero su aplicación debe estar acompañada de una validación más amplia. Para obtener conclusiones más sólidas sobre estrés sería necesario realizar pruebas con diferentes personas y condiciones controladas, además de incorporar otros parámetros fisiológicos que permitan distinguir entre respuestas producidas por actividad física, respiración, estímulos externos y estrés. Esto permitiría pasar de un prototipo capaz de registrar cambios de GSR a un sistema de evaluación fisiológica con mayor capacidad de interpretación.
 
 # Referencias
 
